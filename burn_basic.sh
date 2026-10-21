@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ==============================================================================
+# Part 1 Script: ATtiny85 CLI Compile, Fuse & Batch-Flash Script
+# ==============================================================================
+
 DEFAULT_TARGET="test_blink/test_blink.ino"
 INPUT_TARGET="$DEFAULT_TARGET"
 CLOCK_SPEED="1"
@@ -41,6 +45,7 @@ case "$CLOCK_SPEED" in
     *)  echo "Error: Choose clock speed 1, 8, or 16."; exit 1 ;;
 esac
 
+# Compile .ino to .hex if sketch is provided
 if [[ -d "$INPUT_TARGET" ]] || [[ "$INPUT_TARGET" == *.ino ]]; then
     echo "Compiling '$INPUT_TARGET' for ATtiny85 @ ${CLOCK_SPEED} MHz..."
     ARDUINO_CLI=$(command -v arduino-cli || echo "./arduino-cli")
