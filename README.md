@@ -1,449 +1,280 @@
-# ATtiny85 Command-Line-Only Programming Tutorial & Burn Script
+# ATtiny85 Command-Line Programming with an Arduino Uno
 
-A complete, step-by-step command-line tutorial and Bash automation suite ("burn script") for writing, compiling, setting hardware fuse bits (1 MHz / 8 MHz / 16 MHz), and batch-programming ATtiny85 microcontrollers using an Arduino Uno as an ISP programmer—without ever opening the Arduino IDE.
+Compile, set clock fuses, and program bare ATtiny85 microcontrollers from the terminal using an Arduino Uno as an ISP programmer. An optional relay sketch also forwards ATtiny85 software serial output to the terminal through the same Uno.
 
----
+The instructions below target macOS. The 1 MHz blink workflow and 8 MHz serial telemetry workflow were confirmed working on the project author's hardware. The scripts also offer a 16 MHz clock option; this walkthrough does not establish hardware validation for that option.
 
-## Table of Contents
-1. [Project Motivation & Features](#1-project-motivation--features)
-2. [Prerequisites & CLI Toolchain Setup (macOS)](#2-prerequisites--cli-toolchain-setup-macos)
-3. [Part 1: Core Hardware Wiring & Terminal Blink Workflow](#3-part-1-core-hardware-wiring--terminal-blink-workflow)
-   - [3.1 ICSP Breadboard Wiring](#31-icsp-breadboard-wiring)
-   - [3.2 Flash the Uno with Standard ArduinoISP via Terminal](#32-flash-the-uno-with-standard-arduinoisp-via-terminal)
-   - [3.3 Create the Blink Sketch via Terminal](#33-create-the-blink-sketch-via-terminal)
-   - [3.4 Script 1: The Core Fuse & Flash Burn Script (`burn_basic.sh`)](#34-script-1-the-core-fuse--flash-burn-script-burn_basicsh)
-4. [Part 2: Pushing the ATtiny85 Limits — Bit-Banged Serial Telemetry](#4-part-2-pushing-the-attiny85-limits--bit-banged-serial-telemetry)
-   - [4.1 Hardware Upgrade: Adding the UART Relay Wire](#41-hardware-upgrade-adding-the-uart-relay-wire)
-   - [4.2 Flash the Uno with `ArduinoISP_Relay` via Terminal](#42-flash-the-uno-with-arduinoisp_relay-via-terminal)
-   - [4.3 Create the 8 MHz Serial Telemetry Sketch via Terminal](#43-create-the-8-mhz-serial-telemetry-sketch-via-terminal)
-   - [4.4 Script 2: Full Burn + Serial Monitor Script (`burn.sh`)](#44-script-2-full-burn--serial-monitor-script-burnsh)
-5. [ATtiny85 Fuse Bit Reference](#5-attiny85-fuse-bit-reference)
+## Contents
 
----
+1. [Project motivation and features](#1-project-motivation-and-features)
+2. [Download the project and install the toolchain](#2-download-the-project-and-install-the-toolchain)
+3. [Wire and program the blink example](#3-wire-and-program-the-blink-example)
+4. [Add serial telemetry](#4-add-serial-telemetry)
+5. [Fuse reference](#5-fuse-reference)
+6. [Troubleshooting](#6-troubleshooting)
 
-## 1. Project Motivation & Features
+## 1. Project motivation and features
 
-When programming multiple bare ATtiny85 microcontrollers in a lab or production setting, the Arduino IDE GUI creates a major bottleneck: you must manually configure menus, click **Burn Bootloader** (to set fuse bits), wait for compilation, and click **Upload Using Programmer** for every single chip.
+Repeatedly configuring a GUI and compiling the same sketch for each chip adds work during lab programming. This project brings compilation, fuse selection, and flashing into one command, with an interactive batch loop that reuses the compiled firmware.
 
-This project provides a **100% command-line workflow** arranged sequentially from basic flashing to advanced hardware telemetry:
-* **Direct Terminal Code Creation & Compilation:** Write `.ino` sketches in the terminal and compile them into `.hex` binaries automatically using `arduino-cli`.
-* **Single-Command Fuse Setting & Flashing:** Uses `avrdude` to program Extended (`efuse`), High (`hfuse`), and Low (`lfuse`) fuse bytes alongside flash memory in a single pass.
-* **Dynamic Clock Selection (`-c 1|8|16`):** Automatically matches `F_CPU` compilation speed and hardware `lfuse` bits (`0x62` for 1 MHz, `0xE2` for 8 MHz, `0xF1` for 16 MHz).
-* **Batch-Programming Loop & Single-Shot Modes:** Compile once and flash dozens of ATtiny85 chips sequentially by pressing `[ENTER]`, or pass `-s` for a single-command burn.
-* **Hardware Status LEDs:** Uses `ArduinoISP` pins 7, 8, and 9 for visual breadboard feedback (*Programming*, *Error*, and *Heartbeat*).
-* **Bit-Banged UART Serial Monitor (`-m`):** Overcomes the ATtiny85's lack of hardware UART (`Serial`) by transmitting 9600-baud software serial on `PB3` (DIP Pin 2) through the Arduino Uno programmer directly into the terminal.
+- Compile an Arduino sketch or program an existing Intel HEX file.
+- Select 1, 8, or 16 MHz clock settings with `-c`.
+- Program one chip with `-s`, or use the batch loop.
+- Use ArduinoISP status LEDs for programming and error feedback.
+- Forward 9600-baud ATtiny85 telemetry through the Uno to a 19200-baud terminal monitor.
 
----
+| File | Purpose |
+| --- | --- |
+| [burn_basic.sh](burn_basic.sh) | Compile, set fuses, and flash; single-chip or batch mode. |
+| [burn.sh](burn.sh) | Run `burn_basic.sh`, optionally opening the monitor after a successful single-chip burn. |
+| [ArduinoISP_Relay/ArduinoISP_Relay.ino](ArduinoISP_Relay/ArduinoISP_Relay.ino) | ArduinoISP with software serial forwarding on Uno digital pin 4. |
+| [test_blink/test_blink.ino](test_blink/test_blink.ino) | Seven startup flashes, followed by 1.5 seconds on and 1.5 seconds off. |
+| [serial_demo/serial_demo.ino](serial_demo/serial_demo.ino) | LED and serial telemetry example, used here at 8 MHz. |
 
-## 2. Prerequisites & CLI Toolchain Setup (macOS)
+The files in the repository are the source of truth. Download them rather than copying complete scripts from formatted text.
 
-Create a new project directory and navigate into it:
+## 2. Download the project and install the toolchain
+
+### 2.1 Download all required files
+
+Run this in your terminal. It creates the sketch folders and downloads both scripts and all examples. Existing files with these names will be overwritten; use a new folder if you have local edits to preserve.
+
 ```bash
-mkdir -p ATtiny85_CLI_Project && cd ATtiny85_CLI_Project
+(
+set -e
+mkdir -p ATtiny85_CLI_Project
+cd ATtiny85_CLI_Project
+mkdir -p ArduinoISP_Relay test_blink serial_demo
+
+BASE_URL="https://raw.githubusercontent.com/Baah134/attiny85-cli-burn-script/main"
+for FILE in burn_basic.sh burn.sh ArduinoISP_Relay/ArduinoISP_Relay.ino test_blink/test_blink.ino serial_demo/serial_demo.ino; do
+    curl -fL "$BASE_URL/$FILE" -o "$FILE"
+done
+
+chmod +x burn_basic.sh burn.sh
+bash -n burn_basic.sh
+bash -n burn.sh
+)
+cd ATtiny85_CLI_Project
 ```
 
-### 2.1 Install Standalone `arduino-cli`
-Download the official `arduino-cli` binary directly into your project folder (no Homebrew required):
+Alternatively, clone the repository and work from its root directory:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-mv bin/arduino-cli . && rm -rf bin
+git clone https://github.com/Baah134/attiny85-cli-burn-script.git
+cd attiny85-cli-burn-script
+chmod +x burn_basic.sh burn.sh
 ```
 
-### 2.2 Install AVR & ATtiny85 Board Cores via Terminal
-Initialize the configuration and install both the `arduino:avr` core and the David A. Mellis `attiny` board package from the command line:
+Use one download method. Run the remaining commands from the project directory. Paths containing spaces must be quoted.
+
+### 2.2 Install standalone Arduino CLI
+
+If `./arduino-cli` is already present and works, skip this step. Otherwise, download the official installer and install the CLI into this project directory:
+
 ```bash
-./arduino-cli config init --overwrite
+(
+set -e
+curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh -o /tmp/attiny85-install-cli.sh
+BINDIR="$PWD" sh /tmp/attiny85-install-cli.sh
+./arduino-cli version
+)
+```
+
+The examples below use `./arduino-cli`. If you use an existing installation on your PATH, substitute `arduino-cli` for `./arduino-cli`.
+
+### 2.3 Install the board cores
+
+For a first-time CLI setup, initialize configuration:
+
+```bash
+./arduino-cli config init
+```
+
+If configuration already exists, keep it. Do not overwrite it just to run this project.
+
+```bash
+(
+set -e
 ./arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/damellis/attiny/ide-1.6.x-boards-manager/package_damellis_attiny_index.json
 ./arduino-cli core update-index
 ./arduino-cli core install arduino:avr
 ./arduino-cli core install attiny:avr
+./arduino-cli core list
+)
 ```
 
-### 2.3 Fix macOS Apple Silicon `bad CPU type in executable` Error (If Applicable)
-If an older package installed a 32-bit `avrdude` (`6.3.0-arduino9`) that macOS blocks, symlink your 64-bit `6.3.0-arduino17` binary over it:
+`burn_basic.sh` searches the standard Arduino15 directories for AVRDUDE versions `8.0-arduino.1` and `6.3.0-arduino17`. Other versions or custom data directories require adjusting its `AVRDUDE_BIN` and `AVRDUDE_CONF` discovery. Keep the executable and configuration from the same installation. Do not delete or replace installed tool directories to work around an incompatible executable.
+
+## 3. Wire and program the blink example
+
+### 3.1 Hardware wiring
+
+Use an Arduino Uno, a bare ATtiny85 in an 8-pin DIP package, a breadboard, jumper wires, an LED with a 220-ohm series resistor, and a 10 µF capacitor for Uno reset suppression. Identify the ATtiny85 notch/dot before wiring. Disconnect power when wiring or replacing chips.
+
+| Arduino Uno connection | ATtiny85 physical pin | Function |
+| --- | --- | --- |
+| 5V | 8 | VCC |
+| GND | 4 | Common ground |
+| Digital 10 | 1 (PB5 / RESET) | Target reset |
+| Digital 11 | 5 (PB0 / MOSI) | MOSI; also the example LED output |
+| Digital 12 | 6 (PB1 / MISO) | MISO |
+| Digital 13 | 7 (PB2 / SCK) | SCK |
+
+Connect ATtiny85 pin 5 through a 220-ohm resistor and LED to ground, with the LED oriented to conduct when PB0 is high. Place a 100 nF decoupling capacitor across ATtiny85 VCC and GND close to the chip.
+
+Optional Uno status LEDs each need a series resistor: digital 7 for programming, digital 8 for errors, and digital 9 for the standard ArduinoISP heartbeat. The relay firmware changes idle heartbeat behavior, so a missing idle pulse alone does not establish failure.
+
+**The 10 µF capacitor goes across RESET and GND on the Uno, not the ATtiny85.** Its positive lead goes to Uno RESET and its negative lead to GND. Disconnect one leg when uploading a sketch to the Uno; reconnect it before using the Uno to program the ATtiny85.
+
+### 3.2 Upload the programmer firmware to the Uno
+
+Use the included `ArduinoISP_Relay` sketch for both blink programming and the later telemetry example. This avoids searching for a separately installed `ArduinoISP.ino` or modifying it with Python.
+
+Disconnect one leg of the Uno reset capacitor, connect the Uno by USB, then run:
+
 ```bash
-rm -rf ~/Library/Arduino15/packages/arduino/tools/avrdude/6.3.0-arduino9 && \
-ln -s ~/Library/Arduino15/packages/arduino/tools/avrdude/6.3.0-arduino17 ~/Library/Arduino15/packages/arduino/tools/avrdude/6.3.0-arduino9
-```
-
----
-
-## 3. Part 1: Core Hardware Wiring & Terminal Blink Workflow
-
-### 3.1 ICSP Breadboard Wiring
-Locate the dot/notch on your ATtiny85 (Physical Pin 1) and wire it to your Arduino Uno:
-
-```text
-                  +---v---+
-  (RESET) PB5  -> 1|•      |8 <- VCC (5V)
-          PB3     2|       |7 <- PB2 (SCK)
-          PB4     3|       |6 <- PB1 (MISO)
-          GND  -> 4|       |5 <- PB0 (MOSI + Test LED)
-                  +-------+
-```
-
-| Arduino Uno Pin | ATtiny85 Physical Pin | Function / Component |
-| :--- | :--- | :--- |
-| **5V** | **Pin 8** (`VCC`) | 5V Power Supply |
-| **GND** | **Pin 4** (`GND`) | Common Ground |
-| **Pin 10** | **Pin 1** (`PB5 / RESET`) | SPI Chip Select / Reset |
-| **Pin 11** | **Pin 5** (`PB0 / MOSI`) | SPI MOSI + **220 Ω resistor -> LED (+) -> GND** |
-| **Pin 12** | **Pin 6** (`PB1 / MISO`) | SPI MISO |
-| **Pin 13** | **Pin 7** (`PB2 / SCK`) | SPI Clock |
-| **Pin 9** | *(To LED -> GND)* | **Heartbeat LED** (+ 220 Ω resistor to GND) |
-| **Pin 8** | *(To LED -> GND)* | **Error LED** (+ 220 Ω resistor to GND) |
-| **Pin 7** | *(To LED -> GND)* | **Programming Activity LED** (+ 220 Ω resistor to GND) |
-| **RESET to GND** | *(On Arduino Uno)* | **10 µF Electrolytic Capacitor** (Minus `-` stripe in `GND`). **Insert ONLY AFTER Step 3.2!** |
-
-### 3.2 Flash the Uno with Standard `ArduinoISP` via Terminal
-1. Ensure the **10 µF capacitor is removed** from the Arduino Uno's `RESET` pin.
-2. Locate the built-in `ArduinoISP` example and upload it to your Arduino Uno via terminal:
-```bash
-ISP_SRC=$(find ~/Library/Arduino15 -name "ArduinoISP.ino" 2>/dev/null | head -n 1)
-PORT=$(ls /dev/cu.usb* | head -n 1)
-./arduino-cli compile --fqbn arduino:avr:uno "$ISP_SRC"
-./arduino-cli upload -p "$PORT" --fqbn arduino:avr:uno "$ISP_SRC"
-```
-3. **Insert the 10 µF capacitor** between `RESET` and `GND` on the Arduino Uno (negative stripe to `GND`). Your Pin 9 Heartbeat LED will begin pulsing.
-
-### 3.3 Create the Blink Sketch via Terminal
-Run this command in your terminal to create `test_blink/test_blink.ino` without opening any GUI editor:
-```bash
-mkdir -p test_blink
-cat << 'EOF' > test_blink/test_blink.ino
-// ATtiny85 Blink Sketch (Software Pin 0 = Physical DIP Pin 5)
-const byte pin_LED = 0;
-
-void setup() {
-  pinMode(pin_LED, OUTPUT);
-  // Rapid 7-flash startup burst to confirm new firmware load
-  for (int k = 0; k < 7; k++) {
-    digitalWrite(pin_LED, HIGH);
-    delay(50);
-    digitalWrite(pin_LED, LOW);
-    delay(50);
-  }
-}
-
-void loop() {
-  digitalWrite(pin_LED, HIGH);
-  delay(500);
-  digitalWrite(pin_LED, LOW);
-  delay(500);
-}
-EOF
-```
-
-### 3.4 Script 1: The Core Fuse & Flash Burn Script (`burn_basic.sh`)
-Create the core single-command/batch programming script by pasting this into your terminal:
-```bash
-cat << 'EOF' > burn_basic.sh
-#!/usr/bin/env bash
-# ==============================================================================
-# Part 1 Script: ATtiny85 CLI Compile, Fuse & Batch-Flash Script
-# ==============================================================================
-
-DEFAULT_TARGET="test_blink/test_blink.ino"
-INPUT_TARGET="$DEFAULT_TARGET"
-CLOCK_SPEED="1"
-PORT=""
-SINGLE_SHOT=false
-
-MCU="attiny85"
-PROGRAMMER="stk500v1"
-BAUD="19200"
-
-LFUSE="0x62"
-HFUSE="0xDF"
-EFUSE="0xFF"
-ARDUINO_CLOCK="internal1"
-
-show_help() {
-    echo "Usage: ./burn_basic.sh [OPTIONS]"
-    echo "  -f <path>   Path to .ino sketch, sketch folder, or .hex file"
-    echo "  -c <speed>  Internal clock speed in MHz: 1, 8, or 16 (default: 1)"
-    echo "  -p <port>   Serial port override"
-    echo "  -s          Single-shot mode (burn one chip and exit)"
-    echo "  -h          Show help menu"
-}
-
-while getopts "f:c:p:sh" opt; do
-    case "$opt" in
-        f) INPUT_TARGET="$OPTARG" ;;
-        c) CLOCK_SPEED="$OPTARG" ;;
-        p) PORT="$OPTARG" ;;
-        s) SINGLE_SHOT=true ;;
-        h) show_help; exit 0 ;;
-        *) show_help; exit 1 ;;
-    esac
-done
-
-case "$CLOCK_SPEED" in
-    1)  LFUSE="0x62"; ARDUINO_CLOCK="internal1" ;;
-    8)  LFUSE="0xE2"; ARDUINO_CLOCK="internal8" ;;
-    16) LFUSE="0xF1"; ARDUINO_CLOCK="internal16" ;;
-    *)  echo "Error: Choose clock speed 1, 8, or 16."; exit 1 ;;
-esac
-
-# Compile .ino to .hex if sketch is provided
-if [[ -d "$INPUT_TARGET" ]] || [[ "$INPUT_TARGET" == *.ino ]]; then
-    echo "Compiling '$INPUT_TARGET' for ATtiny85 @ ${CLOCK_SPEED} MHz..."
-    ARDUINO_CLI=$(command -v arduino-cli || echo "./arduino-cli")
-    SKETCH_DIR=$([[ -d "$INPUT_TARGET" ]] && echo "${INPUT_TARGET%/}" || dirname "$INPUT_TARGET")
-    BUILD_DIR="$SKETCH_DIR/build/cli_${CLOCK_SPEED}MHz"
-
-    "$ARDUINO_CLI" compile --fqbn "attiny:avr:ATtinyX5:cpu=attiny85,clock=${ARDUINO_CLOCK}" --build-path "$BUILD_DIR" "$SKETCH_DIR" || exit 1
-    HEX_FILE=$(find "$BUILD_DIR" -name "*.ino.hex" -o -name "*.hex" | head -n 1)
-else
-    HEX_FILE="$INPUT_TARGET"
+(
+set -e
+./arduino-cli compile --fqbn arduino:avr:uno ArduinoISP_Relay
+./arduino-cli board list
+printf '\nEnter your Uno port exactly as shown above: '
+read -r PORT
+if [ -z "$PORT" ]; then
+    echo "No port entered. Stopping."
+    exit 1
 fi
-
-AVRDUDE_BIN=$(find "$HOME/Library/Arduino15" "$HOME/.arduino15" -path "*/8.0-arduino.1/bin/avrdude" -o -path "*/6.3.0-arduino17/bin/avrdude" 2>/dev/null | head -n 1)
-AVRDUDE_CONF=$(find "$HOME/Library/Arduino15" "$HOME/.arduino15" -path "*/8.0-arduino.1/etc/avrdude.conf" -o -path "*/6.3.0-arduino17/etc/avrdude.conf" 2>/dev/null | head -n 1)
-[ -z "$PORT" ] && PORT=$(ls /dev/cu.usb* /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -n 1)
-
-burn_chip() {
-    "$AVRDUDE_BIN" -C "$AVRDUDE_CONF" \
-        -p "$MCU" -c "$PROGRAMMER" -P "$PORT" -b "$BAUD" \
-        -U efuse:w:"$EFUSE":m \
-        -U hfuse:w:"$HFUSE":m \
-        -U lfuse:w:"$LFUSE":m \
-        -U flash:w:"$HEX_FILE":i
-}
-
-if [ "$SINGLE_SHOT" = true ]; then
-    burn_chip
-    exit $?
-fi
-
-COUNT=0
-while true; do
-    read -p "Insert ATtiny85 and press [ENTER] to burn (or 'q' to quit): " choice
-    [[ "$choice" == "q" || "$choice" == "Q" ]] && echo "Total programmed: $COUNT" && break
-    burn_chip && ((COUNT++)) && echo "SUCCESS! Chip #$COUNT programmed."
-done
-EOF
-chmod +x burn_basic.sh
-```
-
-**Run Part 1 (Single-Shot or Batch Mode):**
-```bash
-# Single-command compile, set 1 MHz fuses, and flash:
-./burn_basic.sh -s -c 1 -f test_blink/test_blink.ino
-
-# Batch mode (program multiple ATtiny85s in a row at 8 MHz):
-./burn_basic.sh -c 8 -f test_blink/test_blink.ino
-```
-
----
-
-## 4. Part 2: Pushing the ATtiny85 Limits — Bit-Banged Serial Telemetry
-
-Unlike the Arduino Uno (ATmega328P), the ATtiny85 has **no hardware UART** (`Serial`). To push the microcontroller's limits, we configure the ATtiny85 to run at **8 MHz** (`lfuse = 0xE2`) and bit-bang 9600-baud serial data out of **Physical Pin 2 (`PB3`)** into **Arduino Uno Pin 4**, using the Uno as both an ISP programmer and a transparent USB-Serial bridge.
-
-### 4.1 Hardware Upgrade: Adding the UART Relay Wire
-Add **one jumper wire** to your existing breadboard setup:
-* **ATtiny85 Physical Pin 2 (`PB3`)** ---> **Arduino Uno Digital Pin 4**
-
-### 4.2 Flash the Uno with `ArduinoISP_Relay` via Terminal
-1. **Remove one leg of the 10 µF capacitor** from `GND` on the Arduino Uno.
-2. Run this script in your terminal to inject non-blocking `SoftwareSerial` forwarding (on Uno Pin 4) into `ArduinoISP` and upload it to your Uno:
-```bash
-ISP_SRC=$(find ~/Library/Arduino15 -name "ArduinoISP.ino" 2>/dev/null | head -n 1)
-mkdir -p ArduinoISP_Relay
-cp "$ISP_SRC" ArduinoISP_Relay/ArduinoISP_Relay.ino
-
-python3 -c '
-with open("ArduinoISP_Relay/ArduinoISP_Relay.ino", "r") as f:
-    code = f.read()
-
-header = "#include <SoftwareSerial.h>\nSoftwareSerial tinySerial(4, 3);\n"
-code = header + code.replace("SERIAL.begin(BAUDRATE);", "SERIAL.begin(BAUDRATE);\n  tinySerial.begin(9600);")
-
-relay_hook = "if (!pmode) { while (tinySerial.available()) { SERIAL.write(tinySerial.read()); } } else { heartbeat(); }"
-code = code.replace("heartbeat();", relay_hook)
-
-with open("ArduinoISP_Relay/ArduinoISP_Relay.ino", "w") as f:
-    f.write(code)
-'
-
-PORT=$(ls /dev/cu.usb* | head -n 1)
-./arduino-cli compile --fqbn arduino:avr:uno ArduinoISP_Relay && \
 ./arduino-cli upload -p "$PORT" --fqbn arduino:avr:uno ArduinoISP_Relay
-```
-3. **Re-insert the 10 µF capacitor** between `RESET` and `GND` on the Arduino Uno.
-
-### 4.3 Create the 8 MHz Serial Telemetry Sketch via Terminal
-Run this command in your terminal to create `serial_demo/serial_demo.ino`:
-```bash
-mkdir -p serial_demo
-cat << 'EOF' > serial_demo/serial_demo.ino
-#include <SoftwareSerial.h>
-
-// Software Pin 0 = Physical DIP Pin 5 (LED)
-// Software Pin 3 = Physical DIP Pin 2 (UART TX -> Uno Pin 4)
-// Software Pin 4 = Physical DIP Pin 3 (Unused RX)
-const byte pin_LED = 0;
-SoftwareSerial mySerial(4, 3);
-
-unsigned long counter = 0;
-
-void setup() {
-  pinMode(pin_LED, OUTPUT);
-  mySerial.begin(9600);
-
-  for (int k = 0; k < 5; k++) {
-    digitalWrite(pin_LED, HIGH);
-    delay(50);
-    digitalWrite(pin_LED, LOW);
-    delay(50);
-  }
-  mySerial.println("\r\n=== ATtiny85 Bit-Banged UART Online (8 MHz) ===");
-}
-
-void loop() {
-  digitalWrite(pin_LED, HIGH);
-  mySerial.print("[ATtiny85] Packet #");
-  mySerial.print(counter++);
-  mySerial.print(" | Uptime: ");
-  mySerial.print(millis() / 1000.0, 1);
-  mySerial.println("s | LED: ON");
-  delay(500);
-
-  digitalWrite(pin_LED, LOW);
-  delay(500);
-}
-EOF
+)
 ```
 
-### 4.4 Script 2: Full Burn + Serial Monitor Script (`burn.sh`)
-This complete version of `burn.sh` includes everything from `burn_basic.sh` plus the **`-m` flag**, which opens a live `19200`-baud CLI serial monitor immediately after flashing the chip:
+After a successful upload, reconnect the 10 µF reset capacitor. The Uno now contains the programmer firmware; do not upload the ATtiny sketch to the Uno.
+
+### 3.3 Program one ATtiny85
+
+List the ports:
+
 ```bash
-cat << 'EOF' > burn.sh
-#!/usr/bin/env bash
-# ==============================================================================
-# Part 2 Master Script: ATtiny85 Compile, Fuse, Batch-Flash & Serial Monitor
-# ==============================================================================
+./arduino-cli board list
+```
 
-DEFAULT_TARGET="test_blink/test_blink.ino"
-INPUT_TARGET="$DEFAULT_TARGET"
-CLOCK_SPEED="1"
-PORT=""
-SINGLE_SHOT=false
-OPEN_MONITOR=false
+Replace `/dev/cu.usbmodemXXXX` below with the Uno port shown on your machine:
 
-MCU="attiny85"
-PROGRAMMER="stk500v1"
-BAUD="19200"
+```bash
+bash ./burn_basic.sh -s -c 1 -p /dev/cu.usbmodemXXXX -f test_blink/test_blink.ino
+```
 
-LFUSE="0x62"
-HFUSE="0xDF"
-EFUSE="0xFF"
-ARDUINO_CLOCK="internal1"
+The script compiles for 1 MHz, sets fuses, and programs flash. Check that AVRDUDE finishes without errors. The LED gives seven rapid startup flashes, then stays on for 1.5 seconds and off for 1.5 seconds.
 
-show_help() {
-    echo "Usage: ./burn.sh [OPTIONS]"
-    echo "  -f <path>   Path to .ino sketch, sketch folder, or .hex file"
-    echo "  -c <speed>  Internal clock speed in MHz: 1, 8, or 16 (default: 1)"
-    echo "  -p <port>   Serial port override"
-    echo "  -s          Single-shot mode (burn one chip immediately and exit)"
-    echo "  -m          Open live CLI Serial Monitor after burning (Uno Pin 4 <- ATtiny Pin 2)"
-    echo "  -h          Show this help message and exit"
-}
+### 3.4 Batch programming and HEX input
 
-while getopts "f:c:p:smh" opt; do
-    case "$opt" in
-        f) INPUT_TARGET="$OPTARG" ;;
-        c) CLOCK_SPEED="$OPTARG" ;;
-        p) PORT="$OPTARG" ;;
-        s) SINGLE_SHOT=true ;;
-        m) OPEN_MONITOR=true ;;
-        h) show_help; exit 0 ;;
-        *) show_help; exit 1 ;;
-    esac
-done
+Omit `-s` to compile once and enter the programming loop:
 
-case "$CLOCK_SPEED" in
-    1)  LFUSE="0x62"; ARDUINO_CLOCK="internal1" ;;
-    8)  LFUSE="0xE2"; ARDUINO_CLOCK="internal8" ;;
-    16) LFUSE="0xF1"; ARDUINO_CLOCK="internal16" ;;
-    *)  echo "Error: Unsupported clock speed '$CLOCK_SPEED'. Choose 1, 8, or 16."; exit 1 ;;
-esac
+```bash
+bash ./burn_basic.sh -c 8 -p /dev/cu.usbmodemXXXX -f test_blink/test_blink.ino
+```
 
-if [[ -d "$INPUT_TARGET" ]] || [[ "$INPUT_TARGET" == *.ino ]]; then
-    echo "🔨 Compiling '$INPUT_TARGET' for ATtiny85 @ ${CLOCK_SPEED} MHz..."
-    ARDUINO_CLI=$(command -v arduino-cli || echo "./arduino-cli")
-    SKETCH_DIR=$([[ -d "$INPUT_TARGET" ]] && echo "${INPUT_TARGET%/}" || dirname "$INPUT_TARGET")
-    BUILD_DIR="$SKETCH_DIR/build/cli_${CLOCK_SPEED}MHz"
+Press Enter for each programming attempt and type `q` to finish. Disconnect target power before replacing a chip, then reconnect it before pressing Enter. This breadboard setup does not control target power automatically.
 
-    "$ARDUINO_CLI" compile --fqbn "attiny:avr:ATtinyX5:cpu=attiny85,clock=${ARDUINO_CLOCK}" --build-path "$BUILD_DIR" "$SKETCH_DIR" || exit 1
-    HEX_FILE=$(find "$BUILD_DIR" -name "*.ino.hex" -o -name "*.hex" | head -n 1)
-elif [[ "$INPUT_TARGET" == *.hex ]]; then
-    HEX_FILE="$INPUT_TARGET"
-else
-    echo "Error: Invalid input target '$INPUT_TARGET'."; exit 1
+To program an existing HEX file:
+
+```bash
+bash ./burn_basic.sh -s -c 8 -p /dev/cu.usbmodemXXXX -f firmware.hex
+```
+
+For precompiled HEX input, ensure the firmware was built for the selected clock. The script cannot infer its compilation clock from the HEX file.
+
+## 4. Add serial telemetry
+
+### 4.1 Add the telemetry wire
+
+Keep the ISP wiring and common ground. Add:
+
+**ATtiny85 physical pin 2 (PB3 / TX) → Uno digital pin 4 (software RX).**
+
+Do not confuse ATtiny85 physical pin 4 (GND) with Uno digital pin 4 (telemetry input).
+
+| Serial link | Baud rate |
+| --- | --- |
+| ATtiny85 software TX → Uno software RX | 9600 |
+| Uno hardware serial → terminal monitor | 19200 |
+
+These rates are intentionally different. The Uno receives bytes at 9600 and forwards them at 19200. Use 8 MHz for this telemetry walkthrough.
+
+### 4.2 Combined flash and monitor command
+
+If you completed Section 3.2, the Uno already has the relay firmware. Keep its reset capacitor connected and run:
+
+```bash
+(
+set -e
+./arduino-cli board list
+printf '\nEnter your Uno port exactly as shown above: '
+read -r PORT
+if [ -z "$PORT" ]; then
+    echo "No port entered. Stopping."
+    exit 1
 fi
-
-AVRDUDE_BIN=$(find "$HOME/Library/Arduino15" "$HOME/.arduino15" -path "*/8.0-arduino.1/bin/avrdude" -o -path "*/6.3.0-arduino17/bin/avrdude" 2>/dev/null | head -n 1)
-AVRDUDE_CONF=$(find "$HOME/Library/Arduino15" "$HOME/.arduino15" -path "*/8.0-arduino.1/etc/avrdude.conf" -o -path "*/6.3.0-arduino17/etc/avrdude.conf" 2>/dev/null | head -n 1)
-[ -z "$PORT" ] && PORT=$(ls /dev/cu.usb* /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -n 1)
-
-burn_chip() {
-    "$AVRDUDE_BIN" -C "$AVRDUDE_CONF" \
-        -p "$MCU" -c "$PROGRAMMER" -P "$PORT" -b "$BAUD" \
-        -U efuse:w:"$EFUSE":m \
-        -U hfuse:w:"$HFUSE":m \
-        -U lfuse:w:"$LFUSE":m \
-        -U flash:w:"$HEX_FILE":i
-}
-
-start_monitor() {
-    echo "========================================================"
-    echo " 📡 Live ATtiny85 Serial Monitor ($PORT @ $BAUD baud)"
-    echo "    Press [Ctrl + C] to exit monitor"
-    echo "========================================================"
-    ARDUINO_CLI=$(command -v arduino-cli || echo "./arduino-cli")
-    "$ARDUINO_CLI" monitor -p "$PORT" -c baudrate="$BAUD"
-}
-
-if [ "$SINGLE_SHOT" = true ]; then
-    burn_chip && [ "$OPEN_MONITOR" = true ] && start_monitor
-    exit $?
-fi
-
-COUNT=0
-while true; do
-    read -p "👉 Insert ATtiny85 and press [ENTER] to burn (or 'q' to quit): " choice
-    [[ "$choice" == "q" || "$choice" == "Q" ]] && echo "Total programmed: $COUNT" && break
-    if burn_chip; then
-        ((COUNT++))
-        echo "✅ SUCCESS! Chip #$COUNT programmed."
-        [ "$OPEN_MONITOR" = true ] && start_monitor
-    fi
-done
-EOF
-chmod +x burn.sh
+bash ./burn.sh -s -c 8 -p "$PORT" -f serial_demo/serial_demo.ino -m
+)
 ```
 
-**Run Part 2 (Compile for 8 MHz, Burn Fuses, Flash & Open Live Serial Monitor):**
+`burn.sh` delegates programming to `burn_basic.sh` and opens the monitor only if programming succeeds. With `-m`, supply both `-s` and an explicit `-p` so the monitor uses the same port. Press Ctrl+C to leave the monitor; close it before another programming attempt.
+
+### 4.3 Separate commands used during troubleshooting
+
+The same workflow can be run explicitly as two steps:
+
 ```bash
-./burn.sh -s -c 8 -f serial_demo/serial_demo.ino -m
+(
+set -e
+./arduino-cli board list
+printf '\nEnter your Uno port exactly as shown above: '
+read -r PORT
+if [ -z "$PORT" ]; then
+    echo "No port entered. Stopping."
+    exit 1
+fi
+bash ./burn_basic.sh -s -c 8 -p "$PORT" -f serial_demo/serial_demo.ino
+./arduino-cli monitor -p "$PORT" -c baudrate=19200
+)
 ```
 
-Sample Output:
+Expected output includes readable lines such as:
+
 ```text
-=== ATtiny85 Bit-Banged UART Online (8 MHz) ===
 [ATtiny85] Packet #0 | Uptime: 0.5s | LED: ON
 [ATtiny85] Packet #1 | Uptime: 1.5s | LED: ON
-[ATtiny85] Packet #2 | Uptime: 2.5s | LED: ON
 ```
 
----
+The startup banner can be missed while the monitor connects. Printed uptime values are illustrative; serial transmission adds time to each loop.
 
-## 5. ATtiny85 Fuse Bit Reference
+## 5. Fuse reference
 
-| Clock Speed (`-c`) | Low Fuse (`lfuse`) | High Fuse (`hfuse`) | Extended Fuse (`efuse`) | Explanation |
-| :--- | :--- | :--- | :--- | :--- |
-| **1 MHz** (`-c 1`) | `0x62` | `0xDF` | `0xFF` | Factory default: 8 MHz internal oscillator divided by 8 (`CKDIV8 = 0`). |
-| **8 MHz** (`-c 8`) | `0xE2` | `0xDF` | `0xFF` | Unprograms `CKDIV8` (`Bit 7 = 1`) for full 8 MHz speed (required for accurate 9600-baud `SoftwareSerial`). |
-| **16 MHz** (`-c 16`) | `0xF1` | `0xDF` | `0xFF` | Enables internal High-Frequency PLL clock (`CKSEL = 0001`). |
+| Clock option | Low fuse | High fuse | Extended fuse | Clock source |
+| --- | --- | --- | --- | --- |
+| `-c 1` | `0x62` | `0xDF` | `0xFF` | Internal 8 MHz oscillator divided by 8. |
+| `-c 8` | `0xE2` | `0xDF` | `0xFF` | Internal 8 MHz oscillator without the divide-by-8 setting. |
+| `-c 16` | `0xF1` | `0xDF` | `0xFF` | Internal PLL clock option. |
+
+The scripts write all three fuse bytes on every burn. They do not preserve custom brown-out, EEPROM-preservation, or other fuse settings. Review them before using a chip configured for another application. The tutorial programs application flash directly over ISP; it does not install an ATtiny bootloader.
+
+## 6. Troubleshooting
+
+| Symptom | Check or fix |
+| --- | --- |
+| Syntax error containing a literal `\vert{}\vert{}` | A formatted copy replaced Bash `||`. Download the actual script and run `bash -n burn_basic.sh`. |
+| `cp: : No such file or directory` while finding ArduinoISP | The source search returned an empty path. Use the included relay sketch as in Section 3.2. |
+| Missing `ArduinoISP_Relay.ino` | Complete the project download before compiling. |
+| `./burn.sh: no such file or directory` | Check `pwd` and `ls`. Download both scripts, or use Section 4.3 with `burn_basic.sh`. |
+| Missing `serial_demo/serial_demo.ino` | Download the sketch along with its folder in Section 2.1. |
+| `curl: (22)` with HTTP 404 | The requested file or branch is absent. Check the repository filename and path; the download block stops on errors. |
+| Uno upload fails | Disconnect one leg of the Uno reset capacitor, close any monitor, and select the correct port. |
+| ATtiny programming fails | Reconnect the Uno reset capacitor; check chip orientation, power, ground, ISP wiring, and the selected port. |
+| Garbled telemetry | Keep the monitor at 19200 and both software serial endpoints at 9600. Check PB3 / physical pin 2 → Uno digital 4, common ground, and compilation at 8 MHz. |
+| No startup banner but later packets appear | The monitor connected after the banner was sent. Later readable packets confirm forwarding. |
+| `bad CPU type in executable` | Check the architecture and compatibility of the installed AVR tools. Update/select a compatible installation and its matching configuration. |
+
+Use `"$HOME/Library/Arduino15"` for a quoted home-directory path. Do not escape a leading tilde as `\~`, and do not add backslashes before `<` in C++ includes. Copy commands from code blocks.
+
+**Known limitations:** `burn_basic.sh` selects the first discovered port when `-p` is omitted, so these examples always pass a port explicitly. Its batch loop does not stop on closed standard input; run it interactively and exit with `q`. The relay forwards telemetry while outside programming mode, including before a programmer handshake. If a transmitting application interferes with synchronization, disconnect the telemetry wire during programming and reconnect it before monitoring. This is a diagnostic workaround, not an automatic mode switch.
