@@ -1,0 +1,13 @@
+arduino-cli
+.DS_Store
+*.o
+*.d
+*.a
+*.eep
+*.elf
+*.cache
+*.merged
+build.options.json
+compile_commands.json
+sketch_oct19a*
+*.ino.cpp
