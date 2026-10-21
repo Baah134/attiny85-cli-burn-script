@@ -186,10 +186,10 @@ case "$CLOCK_SPEED" in
 esac
 
 # Compile .ino to .hex if sketch is provided
-if [[ -d "$INPUT_TARGET" ]] \vert{}\vert{} [[ "$INPUT_TARGET" == *.ino ]]; then
+if [[ -d "$INPUT_TARGET" ]] || [[ "$INPUT_TARGET" == *.ino ]]; then
     echo "Compiling '$INPUT_TARGET' for ATtiny85 @ ${CLOCK_SPEED} MHz..."
     ARDUINO_CLI=$(command -v arduino-cli || echo "./arduino-cli")
-    SKETCH_DIR=$([[ -d "$INPUT_TARGET" ]] && echo "${INPUT_TARGET\%/}" \vert{}\vert{} dirname "$INPUT_TARGET")
+    SKETCH_DIR=$([[ -d "$INPUT_TARGET" ]] && echo "${INPUT_TARGET%/}" || dirname "$INPUT_TARGET")
     BUILD_DIR="$SKETCH_DIR/build/cli_${CLOCK_SPEED}MHz"
 
     "$ARDUINO_CLI" compile --fqbn "attiny:avr:ATtinyX5:cpu=attiny85,clock=${ARDUINO_CLOCK}" --build-path "$BUILD_DIR" "$SKETCH_DIR" || exit 1
@@ -219,7 +219,7 @@ fi
 COUNT=0
 while true; do
     read -p "Insert ATtiny85 and press [ENTER] to burn (or 'q' to quit): " choice
-    [[ "$choice" == "q" \vert{}\vert{} "$choice" == "Q" ]] && echo "Total programmed: $COUNT" && break
+    [[ "$choice" == "q" || "$choice" == "Q" ]] && echo "Total programmed: $COUNT" && break
     burn_chip && ((COUNT++)) && echo "SUCCESS! Chip #$COUNT programmed."
 done
 EOF
@@ -370,10 +370,10 @@ case "$CLOCK_SPEED" in
     *)  echo "Error: Unsupported clock speed '$CLOCK_SPEED'. Choose 1, 8, or 16."; exit 1 ;;
 esac
 
-if [[ -d "$INPUT_TARGET" ]] \vert{}\vert{} [[ "$INPUT_TARGET" == *.ino ]]; then
+if [[ -d "$INPUT_TARGET" ]] || [[ "$INPUT_TARGET" == *.ino ]]; then
     echo "🔨 Compiling '$INPUT_TARGET' for ATtiny85 @ ${CLOCK_SPEED} MHz..."
     ARDUINO_CLI=$(command -v arduino-cli || echo "./arduino-cli")
-    SKETCH_DIR=$([[ -d "$INPUT_TARGET" ]] && echo "${INPUT_TARGET\%/}" \vert{}\vert{} dirname "$INPUT_TARGET")
+    SKETCH_DIR=$([[ -d "$INPUT_TARGET" ]] && echo "${INPUT_TARGET%/}" || dirname "$INPUT_TARGET")
     BUILD_DIR="$SKETCH_DIR/build/cli_${CLOCK_SPEED}MHz"
 
     "$ARDUINO_CLI" compile --fqbn "attiny:avr:ATtinyX5:cpu=attiny85,clock=${ARDUINO_CLOCK}" --build-path "$BUILD_DIR" "$SKETCH_DIR" || exit 1
@@ -414,7 +414,7 @@ fi
 COUNT=0
 while true; do
     read -p "👉 Insert ATtiny85 and press [ENTER] to burn (or 'q' to quit): " choice
-    [[ "$choice" == "q" \vert{}\vert{} "$choice" == "Q" ]] && echo "Total programmed: $COUNT" && break
+    [[ "$choice" == "q" || "$choice" == "Q" ]] && echo "Total programmed: $COUNT" && break
     if burn_chip; then
         ((COUNT++))
         echo "✅ SUCCESS! Chip #$COUNT programmed."
